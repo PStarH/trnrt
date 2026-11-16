@@ -47,7 +47,15 @@ from fastapi.responses import JSONResponse, PlainTextResponse, Response, Streami
 
 from ..engine.request import Request, SamplingParams, Status
 from ..metrics import Metrics, kv_pages, spec_stats
-from .parsers import THINK_OPEN, StreamParser, chat_finish_reason, parse_full, template_messages, tool_choice_error
+from .parsers import (
+    THINK_OPEN,
+    StreamParser,
+    chat_finish_reason,
+    parse_full,
+    template_messages,
+    tool_choice_error,
+    tools_error,
+)
 
 if TYPE_CHECKING:  # only annotations: importing this module does not load the engine and its model code
     from ..engine.engine import LLMEngine
@@ -710,8 +718,13 @@ def chat_prompt(tok, body: dict) -> tuple[list[int], dict]:
     error = tool_choice_error(tool_choice)
     if error:
         raise HTTPException(status_code=400, detail=error)
-    tools = body.get("tools") if tool_choice != "none" else None
-    if tools:
+    tools = body.get("tools")
+    error = tools_error(tools)
+    if error:
+        raise _bad(error)
+    if tool_choice == "none":
+        tools = None  # rendered and parsed as if the request sent none, as before
+    elif tools:
         kwargs["tools"] = tools
     ids = _template_ids(tok, messages, kwargs)
     # With thinking on, the template opens the reasoning block in the prompt and the output starts inside it; with
@@ -728,7 +741,7 @@ def chat_prompt(tok, body: dict) -> tuple[list[int], dict]:
         "tools": bool(tools),
         "thinking_open": tail.endswith(THINK_OPEN),
         "tool_defs": tools,
-        "parallel_tool_calls": body.get("parallel_tool_calls") is not False,
+        "parallel_tool_calls": _flag(body, "parallel_tool_calls", default=True),
     }
     return ids, parse
 
