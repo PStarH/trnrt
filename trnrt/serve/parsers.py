@@ -361,7 +361,6 @@ class _ArgState:
         "broken",  # the layout is not sequential: render with _arguments over the whole text
         "close_from",  # where the next search for </arg_value> resumes
         "esc_from",  # raw characters of the open value already escaped
-        "esc_parts",  # their escaped form
         "items",  # completed (key, raw value, closed) pairs, as _arguments reads them
         "name",  # the call's name, None while it may still be being written
         "off",  # index of the first <arg_key>, -1 until the body holds one
@@ -389,7 +388,6 @@ class _ArgState:
         self.base_n = 0
         self.prefix: str | None = None
         self.esc_from = 0
-        self.esc_parts: list[str] = []
         self.sent_parts: list[str] = []
         self.sent_len = 0
 
@@ -611,9 +609,13 @@ class StreamParser:
         """Render the closed pairs once each into base / base_join, the text an open pair is appended to."""
         if st.base_n == len(st.items):
             return
-        parts = [_pair_json(k, v, props) for k, v, _closed in st.items]
-        st.base = "{" + ", ".join(parts) if parts else ""
-        st.base_join = "{" + ", ".join(parts) + ", " if parts else "{"
+        parts = [_pair_json(k, v, props) for k, v, _closed in st.items[st.base_n :]]
+        if st.base_n:
+            st.base += ", " + ", ".join(parts)
+            st.base_join += ", ".join(parts) + ", "
+        else:
+            st.base = "{" + ", ".join(parts)
+            st.base_join = "{" + ", ".join(parts) + ", "
         st.base_n = len(st.items)
 
     def _arg_text(self, body: str, off: int, st: _ArgState, complete: bool, props: dict) -> str:
@@ -655,10 +657,8 @@ class StreamParser:
         value_len = len(body) - vs
         if prefix != st.prefix:
             # A new open pair: what the previous one emitted is complete, and this value is escaped from its start.
-            st.prefix, st.esc_from, st.esc_parts = prefix, 0, []
+            st.prefix, st.esc_from = prefix, 0
             e = _esc(body[vs : vs + value_len])
-            if e:
-                st.esc_parts.append(e)
             st.esc_from = value_len
             full = prefix + '"' + e
             sent = "".join(st.sent_parts)
@@ -671,7 +671,6 @@ class StreamParser:
             return ""  # a body never shrinks between pushes; defensive, and nothing already sent can be retracted
         e = _esc(body[vs + st.esc_from : vs + value_len])
         if e:
-            st.esc_parts.append(e)
             st.sent_parts.append(e)
             st.sent_len += len(e)
         st.esc_from = value_len
