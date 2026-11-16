@@ -5,6 +5,14 @@ and versions follow [Semantic Versioning](https://semver.org/). Rebuild the comp
 
 ## [Unreleased]
 
+### Fixed
+
+- The streaming tool-call parser no longer re-scans and re-renders the whole argument text on every push. A call
+  whose value grows (a `write_file` content) cost O(n²) over the stream: on an Apple M2 host (CPython 3.13.5),
+  64 KB of content in 5,349 pushes took 5–6 s of parser CPU time, now 0.1 s. The streamed argument deltas and the
+  non-streaming result are byte-identical to the shipped parser; a layout the cursor scan does not recognise falls
+  back to it.
+
 ## [0.1.0] - 2026-11-08
 
 The first public release.
