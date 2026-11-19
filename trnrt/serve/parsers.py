@@ -319,12 +319,21 @@ def tools_error(tools) -> str | None:
         if not isinstance(fn, dict):
             return f"`tools[{i}].function` must be an object"
         name = fn.get("name")
-        if not isinstance(name, str) or not name:
-            return f"`tools[{i}].function.name` must be a non-empty string"
-        if fn.get("parameters") is not None and not isinstance(fn["parameters"], dict):
-            return f"`tools[{i}].function.parameters` must be an object"
+        if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", name):
+            return f"`tools[{i}].function.name` must be 1-64 characters from [A-Za-z0-9_-]"
+        params = fn.get("parameters")
+        if params is not None:
+            if not isinstance(params, dict):
+                return f"`tools[{i}].function.parameters` must be an object"
+            if not isinstance(params.get("properties", {}), dict):
+                return f"`tools[{i}].function.parameters.properties` must be an object"
         if fn.get("description") is not None and not isinstance(fn["description"], str):
             return f"`tools[{i}].function.description` must be a string"
+        if fn.get("strict") is True:
+            return (
+                f"`tools[{i}].function.strict` is not supported: this server does not run the constrained decoding "
+                "it asks for. Send false or omit it."
+            )
     return None
 
 

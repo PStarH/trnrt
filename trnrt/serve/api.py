@@ -501,10 +501,10 @@ def _num(
     return float(v)
 
 
-def _flag(body: dict, key: str, default: bool = False) -> bool:
-    v = body.get(key)
-    if v is None:
+def _flag(body: dict, key: str, default: bool = False, *, null_is_absent: bool = True) -> bool:
+    if key not in body or (null_is_absent and body[key] is None):
         return default
+    v = body[key]
     if not isinstance(v, bool):
         raise _bad(f"{key} must be true or false")
     return v
@@ -719,7 +719,8 @@ def chat_prompt(tok, body: dict) -> tuple[list[int], dict]:
     if error:
         raise HTTPException(status_code=400, detail=error)
     tools = body.get("tools")
-    error = tools_error(tools)
+    # tool_choice "none" discards `tools` below, as it always has: its shape cannot matter to this request.
+    error = tools_error(tools) if tool_choice != "none" else None
     if error:
         raise _bad(error)
     if tool_choice == "none":
@@ -741,7 +742,7 @@ def chat_prompt(tok, body: dict) -> tuple[list[int], dict]:
         "tools": bool(tools),
         "thinking_open": tail.endswith(THINK_OPEN),
         "tool_defs": tools,
-        "parallel_tool_calls": _flag(body, "parallel_tool_calls", default=True),
+        "parallel_tool_calls": _flag(body, "parallel_tool_calls", default=True, null_is_absent=False),
     }
     return ids, parse
 
