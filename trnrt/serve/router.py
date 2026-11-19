@@ -517,8 +517,9 @@ def _request_text_head(path: str, body: dict) -> tuple[str, int]:
 
 
 def _payload(body: dict) -> bytes:
-    """The body as httpx sends it for `json=body` (its encode_json), serialised here so the event loop does not: another
-    ~6 ms at 1 MB per request. The same flags as httpx's, so the bytes the worker receives do not change."""
+    """The body as httpx sends it for `json=body` (httpx>=0.28.1's encode_json, the minimum pyproject requires),
+    serialised here so the event loop does not: another ~6 ms at 1 MB per request. The same flags as httpx's, so the
+    bytes the worker receives do not change."""
     return json.dumps(body, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
 
 
