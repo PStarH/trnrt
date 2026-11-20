@@ -329,7 +329,10 @@ def tools_error(tools) -> str | None:
                 return f"`tools[{i}].function.parameters.properties` must be an object"
         if fn.get("description") is not None and not isinstance(fn["description"], str):
             return f"`tools[{i}].function.description` must be a string"
-        if fn.get("strict") is True:
+        strict = fn.get("strict")
+        if strict is not None and not isinstance(strict, bool):
+            return f"`tools[{i}].function.strict` must be true or false"
+        if strict is True:
             return (
                 f"`tools[{i}].function.strict` is not supported: this server does not run the constrained decoding "
                 "it asks for. Send false or omit it."

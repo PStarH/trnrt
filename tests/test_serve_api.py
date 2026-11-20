@@ -223,6 +223,9 @@ def test_malformed_tools_and_parallel_tool_calls_are_400(serve):
         [{"type": "function", "function": {"name": "f", "parameters": {"properties": ["x"]}}}],
         [{"type": "function", "function": {"name": "f", "description": 1}}],
         [{"type": "function", "function": {"name": "f", "strict": True}}],
+        [{"type": "function", "function": {"name": "f", "strict": "true"}}],
+        [{"type": "function", "function": {"name": "f", "strict": 1}}],
+        [{"type": "function", "function": {"name": "f", "strict": {}}}],
         [{"type": "nope", "function": {"name": "f"}}],
     ):
         r = client.post("/v1/chat/completions", json={**body, "tools": tools})
@@ -237,9 +240,10 @@ def test_malformed_tools_and_parallel_tool_calls_are_400(serve):
     assert r.status_code == 200, r.text  # tools are discarded with tool_choice "none"
     r = client.post("/v1/chat/completions", json={**body, "tools": TOOLS, "parallel_tool_calls": False})
     assert r.status_code == 200, r.text
-    neutral = [{"type": "function", "function": {"name": "f", "strict": False}}]
-    r = client.post("/v1/chat/completions", json={**body, "tools": neutral})
-    assert r.status_code == 200, r.text  # strict false is neutral, not unsupported
+    for neutral_strict in (False, None):
+        neutral = [{"type": "function", "function": {"name": "f", "strict": neutral_strict}}]
+        r = client.post("/v1/chat/completions", json={**body, "tools": neutral})
+        assert r.status_code == 200, (neutral_strict, r.text)  # false and null are neutral, not unsupported
 
 
 def test_streamed_chat_gives_the_same_message_and_a_usage_chunk_when_asked(serve):
