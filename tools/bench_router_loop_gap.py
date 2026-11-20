@@ -98,7 +98,13 @@ async def _serve(app: FastAPI, port: int) -> tuple[uvicorn.Server, asyncio.Task]
     deadline = asyncio.get_running_loop().time() + 10
     while not server.started:
         if task.done():
-            raise RuntimeError("router server exited during startup")
+            if task.cancelled():
+                raise RuntimeError("router server exited during startup")
+            cause = task.exception()
+            if cause is None:
+                raise RuntimeError("router server exited during startup")
+            # Chained so the bind or configuration error that ended the server is not lost (and retrieved).
+            raise RuntimeError("router server exited during startup") from cause
         if asyncio.get_running_loop().time() > deadline:
             raise RuntimeError("router server did not become ready in 10 s")
         await asyncio.sleep(0.01)
