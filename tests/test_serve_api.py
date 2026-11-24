@@ -243,6 +243,13 @@ def test_malformed_tools_and_parallel_tool_calls_are_400(serve):
     assert r.status_code == 400 and "tools" in r.json()["detail"], r.text  # malformed, whatever tool_choice says
     r = client.post("/v1/chat/completions", json={**body, "messages": {"role": "user", "content": "hi"}})
     assert r.status_code == 400 and "messages must be an array" in r.json()["detail"], r.text  # was a 500
+    for messages in ("", 0):  # falsy, but sent: still the wrong type
+        r = client.post("/v1/chat/completions", json={**body, "messages": messages})
+        assert "messages must be an array" in r.json()["detail"], (messages, r.text)
+    r = client.post(
+        "/v1/chat/completions", json={**body, "tools": [{"type": "function", "function": {"name": "f" * 129}}]}
+    )
+    assert r.status_code == 400 and "1-128" in r.json()["detail"], r.text
     assert eng.added == []  # none reached the engine
     r = client.post("/v1/chat/completions", json={**body, "tools": TOOLS, "tool_choice": "none"})
     assert r.status_code == 200, r.text  # well-formed tools are discarded with tool_choice "none"
@@ -254,6 +261,7 @@ def test_malformed_tools_and_parallel_tool_calls_are_400(serve):
         None,
         [{"function": {"name": "f"}}],
         [{"type": "function", "function": {"name": "f", "parameters": None}}],
+        [{"type": "function", "function": {"name": "f" * 128}}],  # the Messages API's longest name
     ):
         r = client.post("/v1/chat/completions", json={**body, "tools": tools})
         assert r.status_code == 200, (tools, r.text)

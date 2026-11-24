@@ -310,8 +310,9 @@ def tools_error(tools) -> str | None:
         if not isinstance(fn, dict):
             return f"`tools[{i}].function` must be an object"
         name = fn.get("name")
-        if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", name):
-            return f"`tools[{i}].function.name` must be 1-64 characters from [A-Za-z0-9_-]"
+        # up to 128: the Messages API's limit (its tools come through here too), above OpenAI's 64
+        if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", name):
+            return f"`tools[{i}].function.name` must be 1-128 characters from [A-Za-z0-9_-]"
         params = fn.get("parameters")
         if params is not None:
             if not isinstance(params, dict):

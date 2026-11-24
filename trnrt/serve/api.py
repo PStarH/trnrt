@@ -1371,7 +1371,7 @@ def chat_prompt(tok, body: dict, cache: PromptCache | None = None) -> tuple[list
     is parsed with. HTTPException 400 on a malformed request. With `cache` (TRNRT_PROMPT_CACHE_MB) the ids come through
     the prompt token cache, the same ids."""
     messages = body.get("messages")
-    if not messages:
+    if messages is None or messages == []:
         raise HTTPException(status_code=400, detail="messages is required")
     if not isinstance(messages, list):
         raise _bad("messages must be an array")
