@@ -135,6 +135,19 @@ def test_streaming_does_not_reparse_the_whole_argument_text(monkeypatch):
     assert counting.finditer_calls == 1  # the block's final push
 
 
+def test_text_between_argument_pairs_streams_as_the_whole_text_parse_does():
+    """A torn `<arg_ke` between two pairs is no layout the cursor scan reads, so the whole-text parse decides and the
+    deltas are the ones the shipped parser sent; skipping the text instead reordered the arguments."""
+    p = StreamParser(tools=True)
+    first = p.push(
+        "<tool_call>f<arg_key>s</arg_key><arg_value>1</arg_value><arg_ke<arg_key>i</arg_key><arg_value>2</arg_value>"
+        "y>s</arg_key><arg_value>3",
+        final=False,
+    )
+    assert first[0]["tool_calls"][0]["function"]["arguments"] == '{"s": "1", "i": "2", "s": "3'
+    assert p.push("<arg_key>b</arg_key><arg_value>true</arg_value></tool_call>", final=True) == []
+
+
 def test_large_streamed_value_matches_the_full_parse():
     value = 'the model writes "quotes", a \\ backslash, a tab\t and 中文🙂\n' * 400
     text = (

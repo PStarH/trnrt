@@ -366,6 +366,7 @@ class _ArgState:
         "off",  # index of the first <arg_key>, -1 until the body holds one
         "off_from",  # where the next search for it resumes
         "opener_from",  # where the next search for a later <arg_key> resumes
+        "pair_at",  # (base_n, value start) of the open pair that `prefix` renders
         "partial",  # (key, value start) of the open tail pair, None when there is none
         "prefix",  # render of the open pair up to its opening quote
         "scan",  # where the next pair scan resumes
@@ -386,8 +387,9 @@ class _ArgState:
         self.base = ""
         self.base_join = "{"
         self.base_n = 0
-        self.prefix: str | None = None
-        self.esc_from = 0
+        self.pair_at: tuple[int, int] | None = None
+        self.prefix = ""
+        self.esc_from = -1
         self.sent_parts: list[str] = []
         self.sent_len = 0
 
@@ -428,6 +430,7 @@ class StreamParser:
         self._closed = False  # a reasoning block ended, so a further end tag is a duplicate
         self._skip_nl = False  # drop the newlines that follow the end tag
         self._slot = _Slot()
+        self._close_from = 0  # where the open tool block's search for its end tag resumes
         self._calls = 0
         if thinking_open:
             self._enter_think()
@@ -504,8 +507,11 @@ class StreamParser:
                     self._enter_think()
                 continue
             # otherwise the state is "block"
-            j = self._buf.find(TOOL_CLOSE)
+            j = self._buf.find(TOOL_CLOSE, self._close_from)
+            if j < 0:
+                self._close_from = max(0, len(self._buf) - (len(TOOL_CLOSE) - 1))
             if j >= 0 or final:
+                self._close_from = 0
                 body = self._buf[:j] if j >= 0 else self._buf
                 self._buf = self._buf[j + len(TOOL_CLOSE) :] if j >= 0 else ""
                 out += self._block(body, True, TOOL_CLOSE if j >= 0 else "")
@@ -566,9 +572,14 @@ class StreamParser:
             return
         pos = max(st.scan, off)
         while True:
-            k = body.find(ARG_KEY_OPEN, pos)
-            if k < 0:
-                st.scan, st.partial = max(pos, len(body) - (len(ARG_KEY_OPEN) - 1)), None
+            k = pos
+            while k < len(body) and body[k].isspace():
+                k += 1
+            if not body.startswith(ARG_KEY_OPEN, k):
+                if ARG_KEY_OPEN.startswith(body[k:]):  # nothing yet, or an opener still being written
+                    st.scan, st.partial = k, None
+                else:  # other text between pairs: _ARG_RE.sub splices around it, so the whole-text parse decides
+                    st.broken = True
                 return
             ke = body.find(ARG_KEY_CLOSE, k + len(ARG_KEY_OPEN))
             if ke < 0:
@@ -623,7 +634,8 @@ class StreamParser:
 
         With the call complete, or a body that is not the sequential layout, _arguments over the whole text is the
         result (as shipped) and the delta is its part not sent yet. Otherwise the closed pairs are rendered once each
-        and the open string value is escaped as it arrives, so a push costs its own text, not all of it so far."""
+        and the open string value is escaped as it arrives, so a push costs its own text, not all of it so far (the first
+        push of a new pair also compares the text already sent)."""
         if st.broken or complete:
             text = _arguments(body[off:] if off >= 0 else "", complete, props)
             sent = "".join(st.sent_parts)
@@ -642,7 +654,11 @@ class StreamParser:
             return diff
 
         key, vs = st.partial
-        prefix = st.base_join + json.dumps(key, ensure_ascii=False) + ": "
+        if st.pair_at != (st.base_n, vs):
+            # A new open pair: its prefix is rendered once, not on every push of a value that keeps growing
+            st.pair_at, st.esc_from = (st.base_n, vs), -1
+            st.prefix = st.base_join + json.dumps(key, ensure_ascii=False) + ": "
+        prefix = st.prefix
         schema = props.get(key)
         string_kind = not isinstance(schema, dict) or _schema_types(schema) == {"string"}
         if not string_kind:
@@ -655,9 +671,8 @@ class StreamParser:
             return ""
 
         value_len = len(body) - vs
-        if prefix != st.prefix:
-            # A new open pair: what the previous one emitted is complete, and this value is escaped from its start.
-            st.prefix, st.esc_from = prefix, 0
+        if st.esc_from < 0:
+            # The pair's first push: what the previous one emitted is complete, and this value is escaped from its start.
             e = _esc(body[vs : vs + value_len])
             st.esc_from = value_len
             full = prefix + '"' + e
