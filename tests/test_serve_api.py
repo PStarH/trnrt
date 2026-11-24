@@ -245,7 +245,7 @@ def test_malformed_tools_and_parallel_tool_calls_are_400(serve):
     assert r.status_code == 400 and "messages must be an array" in r.json()["detail"], r.text  # was a 500
     for messages in ("", 0):  # falsy, but sent: still the wrong type
         r = client.post("/v1/chat/completions", json={**body, "messages": messages})
-        assert "messages must be an array" in r.json()["detail"], (messages, r.text)
+        assert r.status_code == 400 and "messages must be an array" in r.json()["detail"], (messages, r.text)
     r = client.post(
         "/v1/chat/completions", json={**body, "tools": [{"type": "function", "function": {"name": "f" * 129}}]}
     )
