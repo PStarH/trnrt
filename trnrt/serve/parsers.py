@@ -295,8 +295,8 @@ def tools_error(tools) -> str | None:
     """None when `tools` is the OpenAI tools array this server can render, else why not. Both the chat template and
     the parser index into each entry's `function`, so a malformed entry either raises inside apply_chat_template (a
     500: _template_ids catches only jinja2.TemplateError) or renders a different prompt without a word; invariant 7
-    refuses it here instead. Absent and null are no tools, and an empty array is allowed, as OpenAI's schema does.
-    vLLM's ChatCompletionToolsParam, whose `type` defaults to "function"."""
+    refuses it here instead. Absent and null are no tools, and an empty array is allowed, as OpenAI's schema does; an
+    entry's `type` defaults to "function"."""
     if tools is None:
         return None
     if not isinstance(tools, list):

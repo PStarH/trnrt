@@ -235,15 +235,28 @@ def test_malformed_tools_and_parallel_tool_calls_are_400(serve):
         r = client.post("/v1/chat/completions", json={**body, "tools": tools})
         assert r.status_code == 400, (tools, r.status_code, r.text)
         assert "tools" in r.json()["detail"], (tools, r.json())
-    for value in ("false", 0, 1, {}, None):
+    for value in ("false", 0, 1, {}):
         r = client.post("/v1/chat/completions", json={**body, "parallel_tool_calls": value})
         assert r.status_code == 400, (value, r.status_code, r.text)
         assert "parallel_tool_calls" in r.json()["detail"], (value, r.json())
-    assert eng.added == []  # none reached the engine
     r = client.post("/v1/chat/completions", json={**body, "tools": "notalist", "tool_choice": "none"})
-    assert r.status_code == 200, r.text  # tools are discarded with tool_choice "none"
-    r = client.post("/v1/chat/completions", json={**body, "tools": TOOLS, "parallel_tool_calls": False})
-    assert r.status_code == 200, r.text
+    assert r.status_code == 400 and "tools" in r.json()["detail"], r.text  # malformed, whatever tool_choice says
+    r = client.post("/v1/chat/completions", json={**body, "messages": {"role": "user", "content": "hi"}})
+    assert r.status_code == 400 and "messages must be an array" in r.json()["detail"], r.text  # was a 500
+    assert eng.added == []  # none reached the engine
+    r = client.post("/v1/chat/completions", json={**body, "tools": TOOLS, "tool_choice": "none"})
+    assert r.status_code == 200, r.text  # well-formed tools are discarded with tool_choice "none"
+    for value in (False, None):  # null is unset, as every other field: parallel calls stay on
+        r = client.post("/v1/chat/completions", json={**body, "tools": TOOLS, "parallel_tool_calls": value})
+        assert r.status_code == 200, (value, r.text)
+    for tools in (  # what OpenAI's schema allows: an empty array, null, no type, no parameters
+        [],
+        None,
+        [{"function": {"name": "f"}}],
+        [{"type": "function", "function": {"name": "f", "parameters": None}}],
+    ):
+        r = client.post("/v1/chat/completions", json={**body, "tools": tools})
+        assert r.status_code == 200, (tools, r.text)
     for neutral_strict in (False, None):
         neutral = [{"type": "function", "function": {"name": "f", "strict": neutral_strict}}]
         r = client.post("/v1/chat/completions", json={**body, "tools": neutral})

@@ -821,10 +821,10 @@ def _num(
     return float(v)
 
 
-def _flag(body: dict, key: str, default: bool = False, *, null_is_absent: bool = True) -> bool:
-    if key not in body or (null_is_absent and body[key] is None):
+def _flag(body: dict, key: str, default: bool = False) -> bool:
+    v = body.get(key)
+    if v is None:
         return default
-    v = body[key]
     if not isinstance(v, bool):
         raise _bad(f"{key} must be true or false")
     return v
@@ -1373,6 +1373,8 @@ def chat_prompt(tok, body: dict, cache: PromptCache | None = None) -> tuple[list
     messages = body.get("messages")
     if not messages:
         raise HTTPException(status_code=400, detail="messages is required")
+    if not isinstance(messages, list):
+        raise _bad("messages must be an array")
     try:
         messages = template_messages(messages, developer_to_system=not template_knows_developer(tok))
     except ValueError as e:
@@ -1383,10 +1385,10 @@ def chat_prompt(tok, body: dict, cache: PromptCache | None = None) -> tuple[list
     if error:
         raise HTTPException(status_code=400, detail=error)
     tools = body.get("tools")
-    # tool_choice "none" discards `tools` below, as it always has: its shape cannot matter to this request.
-    error = tools_error(tools) if tool_choice != "none" else None
+    error = tools_error(tools)  # with tool_choice "none" too: a malformed field is refused whatever else is sent
     if error:
         raise _bad(error)
+    parallel = _flag(body, "parallel_tool_calls", default=True)  # checked before the prompt is rendered
     if tool_choice == "none":
         tools = None  # rendered and parsed as if the request sent none, as before
     elif tools:
@@ -1408,7 +1410,7 @@ def chat_prompt(tok, body: dict, cache: PromptCache | None = None) -> tuple[list
         "tools": bool(tools),
         "thinking_open": tail.endswith(THINK_OPEN),
         "tool_defs": tools,
-        "parallel_tool_calls": _flag(body, "parallel_tool_calls", default=True, null_is_absent=False),
+        "parallel_tool_calls": parallel,
     }
     return ids, parse
 

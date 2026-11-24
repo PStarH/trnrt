@@ -61,7 +61,8 @@ and versions follow [Semantic Versioning](https://semver.org/). Rebuild the comp
 
 - A malformed `tools` array, or a `parallel_tool_calls` that is not a boolean, is refused with a 400 that names the
   field. Before, a non-array `tools` reached the chat template and raised there (a 500), and a malformed entry or
-  `"false"` was accepted silently: a different prompt, and parallel calls kept.
+  `"false"` was accepted silently: a different prompt, and parallel calls kept. A function tool with `strict: true` is
+  refused too (no tool-call grammar is served), on `/v1/chat/completions` and `/v1/responses`.
 
 ## [0.1.0] - 2026-11-08
 
