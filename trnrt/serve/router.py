@@ -124,7 +124,7 @@ STATELESS_ROUTES = ("/tokenize", "/v1/tokenize", "/detokenize", "/v1/detokenize"
 # so the answer goes to the client as it is (503 "The request queue is full.") and the engine stays up. Another
 # engine is not tried: a session belongs on its own, and one without a session was routed where its prefix is cached.
 QUEUE_FULL_HEADER = "x-trnrt-queue-full"
-# The header httpx set for `json=body`, which it no longer sets for the pre-encoded `content=` body (#30).
+# The header httpx sets for `json=body`, which it does not set for the client's own bytes (`content=`).
 _JSON_HEADERS = {"content-type": "application/json"}
 
 
@@ -149,7 +149,7 @@ def _common_prefix(a: str, s: str, i: int) -> int:
     lo, hi = 0, n  # a[:lo] == s[i:i+lo], and a[:hi] != s[i:i+hi] while hi <= n
     while hi - lo > 1:
         mid = (lo + hi) // 2
-        if a[:mid] == s[i : i + mid]:
+        if a[lo:mid] == s[i + lo : i + mid]:  # a[:lo] already matches: compare only past it
             lo = mid
         else:
             hi = mid
@@ -622,28 +622,20 @@ def _request_text_head(path: str, body: dict) -> tuple[str, int]:
     return _request_text(path, body), _request_head(path, body)
 
 
-def _payload(body: dict) -> bytes:
-    """The body as httpx sends it for `json=body` (httpx>=0.28.1's encode_json, the minimum pyproject requires),
-    serialised here so the event loop does not: another ~6 ms at 1 MB per request. The same flags as httpx's, so the
-    bytes the worker receives do not change."""
-    return json.dumps(body, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
-
-
-def _payload_and_text(path: str, body: dict) -> tuple[bytes, str, int]:
-    return _payload(body), *_request_text_head(path, body)
-
-
-async def _json_object(http: Request) -> dict:
-    """The request's JSON object; 400 for anything else, as each engine answers (serve/api.py, _body). Without this, a
-    malformed body or a JSON array raised inside the proxy and the router answered 500. Parsed in a worker thread: a
-    1 MB body is ~6 ms of json.loads, and the loop would spend it stalled for every relayed stream."""
+async def _json_object(http: Request) -> tuple[bytes, dict]:
+    """The request's bytes and its JSON object; 400 for anything else, as each engine answers (serve/api.py, _body).
+    Without this, a malformed body or a JSON array raised inside the proxy and the router answered 500. Parsed in a
+    worker thread: a 1 MB body is ~6 ms of json.loads, and the loop would spend it stalled for every relayed stream. The
+    router never changes a request, so the client's bytes are what it forwards: no second serialisation, which holds the
+    GIL in C even in a worker thread."""
+    raw = await http.body()
     try:
-        body = await asyncio.to_thread(json.loads, await http.body())
+        body = await asyncio.to_thread(json.loads, raw)
     except ValueError:  # json.JSONDecodeError and UnicodeDecodeError
         raise HTTPException(status_code=400, detail="the request body must be a JSON object") from None
     if not isinstance(body, dict):
         raise HTTPException(status_code=400, detail="the request body must be a JSON object")
-    return body
+    return raw, body
 
 
 async def _disconnected(http: Request) -> None:
@@ -831,8 +823,8 @@ def build_router_app(router: Router, poll_s: float = 2.0, health_timeout_s: floa
     async def abort_request(http: Request):
         """Sent to every engine: only the one holding the rid has it (abort_all: every engine aborts all). 200 once
         any engine took it; else the first engine's refusal (a malformed body), or 503 if none answered."""
-        body = await _json_object(http)
-        rs = await each("POST", "/abort_request", health_timeout_s, json=body)
+        raw, _ = await _json_object(http)
+        rs = await each("POST", "/abort_request", health_timeout_s, content=raw, headers=_JSON_HEADERS)
         if any(r is not None and r.status_code == 200 for r in rs):
             return Response(status_code=200)
         r = next((r for r in rs if r is not None), None)
@@ -913,17 +905,12 @@ def build_router_app(router: Router, poll_s: float = 2.0, health_timeout_s: floa
         return HTMLResponse(DASHBOARD_PAGE)
 
     async def proxy(path: str, http: Request):
-        body = await _json_object(http)
+        raw, body = await _json_object(http)
         sid = router.session_of(body)
         key = _session_key(path, body) if sid is not None else None
         tools = bool(body.get("tools"))
-        # The request's text (json.dumps of its messages, ~6 ms at 1 MB) and the bytes httpx sends (its own dump of the
-        # body, another ~6 ms) are computed off the event loop, in one thread hop for a sessionless request.
-        if sid is None:
-            payload, text, head = await asyncio.to_thread(_payload_and_text, path, body)
-        else:
-            payload = await asyncio.to_thread(_payload, body)
-            text, head = "", 0
+        # The request's text (json.dumps of its messages, ~6 ms at 1 MB) is computed off the event loop too.
+        text, head = await asyncio.to_thread(_request_text_head, path, body) if sid is None else ("", 0)
 
         async def pick() -> int:
             return await router.pick_off_loop(text, session=sid, head=head, key=key, tools=tools)
@@ -937,7 +924,7 @@ def build_router_app(router: Router, poll_s: float = 2.0, health_timeout_s: floa
             try:
                 if body.get("stream"):
                     resp = await client.send(
-                        client.build_request("POST", url, content=payload, headers=_JSON_HEADERS), stream=True
+                        client.build_request("POST", url, content=raw, headers=_JSON_HEADERS), stream=True
                     )
                     if resp.status_code == 503:
                         try:
@@ -946,7 +933,7 @@ def build_router_app(router: Router, poll_s: float = 2.0, health_timeout_s: floa
                             await resp.aclose()
                         r = resp
                 else:
-                    r = await _unless_disconnected(http, client.post(url, content=payload, headers=_JSON_HEADERS))
+                    r = await _unless_disconnected(http, client.post(url, content=raw, headers=_JSON_HEADERS))
                     if r is None:  # the client went away: the upstream request is cancelled and its connection closed
                         router.load[w] -= 1
                         return Response(status_code=499)  # nginx's "client closed request"; nobody reads it
@@ -1009,10 +996,10 @@ def build_router_app(router: Router, poll_s: float = 2.0, health_timeout_s: floa
     async def stateless(path: str, http: Request):
         """STATELESS_ROUTES: the first live worker that answers, least loaded first. A refused connection or a 503 (a
         failed engine) marks the worker down, as in a request, and the next one is asked."""
-        body = await _json_object(http)
+        raw, _ = await _json_object(http)
         for w in sorted(router._live(), key=lambda i: (router.load[i], i)):
             try:
-                r = await client.post(router.workers[w] + path, json=body)
+                r = await client.post(router.workers[w] + path, content=raw, headers=_JSON_HEADERS)
             except httpx.ConnectError:
                 router.note_failure(w, hard=True)
                 continue

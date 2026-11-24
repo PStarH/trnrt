@@ -386,29 +386,12 @@ def test_tokenize_and_detokenize_go_to_a_live_worker_and_change_no_routing_state
     asyncio.run(main())
 
 
-def test_the_payload_is_httpx_s_json_encoding():
-    """`_payload` takes httpx's place for `json=body` (#30): same flags as httpx 0.28's encode_json (compact separators,
-    ensure_ascii=False, allow_nan=False), so the bytes a worker receives do not change."""
-    import httpx
-
-    from trnrt.serve.router import _payload
-
-    bodies = [
-        {"model": "glm", "messages": [{"role": "user", "content": "héllo ✓"}]},
-        {"a": [1, 2.5, None, True, {"b": "x" * 1000}], "stream": False},
-        {"text": '\x00\x1f"\\\n'},
-        {"n": 1e-7},
-    ]
-    for body in bodies:
-        assert _payload(body) == httpx.Request("POST", "http://x/", json=body).read()
-
-
 @pytest.mark.parametrize("stream", [False, True])
 def test_the_worker_gets_the_client_body_bytes_and_a_json_content_type(stream):
-    """The proxy serialises the body once, off the event loop, and sends those bytes with Content-Type: application/json
-    (httpx re-dumped `json=body` on the loop for every relayed stream). The bytes are httpx's own encoding of the body
-    the client sent."""
+    """The proxy sends the client's own bytes with Content-Type: application/json: no second serialisation (httpx
+    re-dumped `json=body` on the event loop for every relayed stream). Indented JSON shows it: any re-dump is compact."""
     import asyncio
+    import json
 
     import httpx
 
@@ -419,10 +402,14 @@ def test_the_worker_gets_the_client_body_bytes_and_a_json_content_type(stream):
         router, worker = Router([f"http://127.0.0.1:{ports[0]}"]), _stub_worker(0)
         servers, tasks = await _start([(worker, ports[0]), (build_router_app(router, poll_s=0), ports[1])])
         body = {"model": "glm", "stream": stream, "messages": [{"role": "user", "content": "héllo " * 100_000}]}
-        sent = httpx.Request("POST", "http://x/", json=body).read()
+        sent = json.dumps(body, indent=2).encode()
         try:
             async with httpx.AsyncClient(timeout=30) as c:
-                r = await c.post(f"http://127.0.0.1:{ports[1]}/v1/chat/completions", json=body)
+                r = await c.post(
+                    f"http://127.0.0.1:{ports[1]}/v1/chat/completions",
+                    content=sent,
+                    headers={"Content-Type": "application/json"},
+                )
                 assert r.status_code == 200, r.text
         finally:
             await _stop(servers, tasks)
@@ -431,6 +418,47 @@ def test_the_worker_gets_the_client_body_bytes_and_a_json_content_type(stream):
         assert ctype.split(";")[0] == "application/json", ctype
 
     asyncio.run(main())
+
+
+def test_the_router_parses_a_request_off_the_event_loop(monkeypatch):
+    """json.loads of a request body runs in a worker thread, never on the event loop (here the main thread), for a
+    relayed request and a stateless one alike."""
+    import asyncio
+    import json
+    import threading
+    import types
+
+    import httpx
+
+    import trnrt.serve.router as R
+
+    on_loop: list[bool] = []
+
+    def loads(s, *a, **k):
+        on_loop.append(threading.current_thread() is threading.main_thread())
+        return json.loads(s, *a, **k)
+
+    spy = types.ModuleType("json")
+    spy.__dict__.update(json.__dict__)
+    spy.loads = loads
+    monkeypatch.setattr(R, "json", spy)
+
+    async def main() -> None:
+        ports = [_free_port() for _ in range(2)]
+        router = Router([f"http://127.0.0.1:{ports[0]}"])
+        servers, tasks = await _start([(_stub_worker(0), ports[0]), (R.build_router_app(router, poll_s=0), ports[1])])
+        try:
+            async with httpx.AsyncClient(timeout=30) as c:
+                for path in ("/v1/chat/completions", "/tokenize"):
+                    r = await c.post(
+                        f"http://127.0.0.1:{ports[1]}{path}", json={"messages": [{"role": "user", "content": "x"}]}
+                    )
+                    assert r.status_code == 200, r.text
+        finally:
+            await _stop(servers, tasks)
+
+    asyncio.run(main())
+    assert on_loop and not any(on_loop), on_loop
 
 
 @pytest.mark.parametrize("stream", [False, True])

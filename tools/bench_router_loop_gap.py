@@ -139,7 +139,8 @@ def _client(port: int, body: bytes, requests: int, stream: bool, pause: float) -
                 else:
                     r = await c.post(url, content=body, headers={"content-type": "application/json"})
                     r.raise_for_status()
-                windows.append((t0, time.monotonic(), time.perf_counter() - t0))
+                t1 = time.monotonic()
+                windows.append((t0, t1, t1 - t0))
                 await asyncio.sleep(pause)
 
     asyncio.run(run())
@@ -152,8 +153,20 @@ async def _main(requests: int, size: int, stream: bool, pause: float, session: b
     for e in engines:
         e.start()
     router = Router([f"http://127.0.0.1:{p}" for p in ports[:2]])
-    server, task = await _serve(build_router_app(router, poll_s=0), ports[2])
+    server = task = None
+    try:
+        server, task = await _serve(build_router_app(router, poll_s=0), ports[2])
+        body, gaps, windows = await _measure(ports[2], requests, size, stream, pause, session)
+    finally:  # a failed start or request leaves no stub engine or router behind
+        if server is not None and task is not None:
+            server.should_exit = True
+            await task
+        for e in engines:
+            e.stop()
+    _report(body, gaps, windows, requests, stream, pause, session)
 
+
+async def _measure(port: int, requests: int, size: int, stream: bool, pause: float, session: bool):
     payload = {
         "model": "glm",
         "stream": stream,
@@ -162,20 +175,18 @@ async def _main(requests: int, size: int, stream: bool, pause: float, session: b
     if session:
         payload["session_id"] = "bench"  # session-routed: no prefix tree, the second cost this measures on its own
     body = json.dumps(payload).encode()
-    await asyncio.to_thread(_client, ports[2], body, 1, stream, pause)  # warm up the pools
+    await asyncio.to_thread(_client, port, body, 1, stream, pause)  # warm up the pools
 
     gaps: list[tuple[float, float, float]] = []
     stop = asyncio.Event()
     sampler = asyncio.create_task(_sample(stop, gaps))
-    windows = await asyncio.to_thread(_client, ports[2], body, requests, stream, pause)
+    windows = await asyncio.to_thread(_client, port, body, requests, stream, pause)
     stop.set()
     await sampler
+    return body, gaps, windows
 
-    server.should_exit = True
-    await task
-    for e in engines:
-        e.stop()
 
+def _report(body: bytes, gaps: list, windows: list, requests: int, stream: bool, pause: float, session: bool) -> None:
     # A request's longest loop block: the largest delay whose [expected, actual] interval overlaps its window
     # (a delay that starts at the request's end or ends at its start counts as overlapping).
     per_request = [
